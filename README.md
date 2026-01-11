@@ -31,3 +31,68 @@ Rust製自作/軽量ノードの場合:実行ファイル（バイナリ）が�
 この「友達の余剰リソースを使う」モデルで、「書き込み頻度」はどの程度を想定していますか？（例：チャットのように秒間何度も送るのか、1日1回の記録か）。それにより、最適なコンセンサスアルゴリズムが絞れます。
 
 手出しゼロ、無在庫、最小サプライチェーン(Infra, Product, Service)、最安値
+
+
+
+ledgerno
+
+3. モジュール構成（crate 設計）
+crates/minnet/
+  src/
+    lib.rs
+    config.rs
+    types.rs          // PeerId, NodeId, NetAddr
+    codec.rs          // bincode/postcard + length framing
+    transport.rs      // trait + QUIC impl
+    overlay/
+      mod.rs
+      peer_set.rs     // peer table, scoring
+      gossip.rs       // topic-based broadcast
+      reqresp.rs      // request/response with correlation id
+    protocol/
+      mod.rs
+      messages.rs     // enum NetworkMessage
+      version.rs      // version negotiation
+
+1. ミニマム要件（network module の責務）
+必須（MVP）
+* Node identity（公開鍵）と PeerId（公開鍵ハッシュ等）
+* 接続（TLS/Noise 等で暗号化）
+* メッセージフレーミング（長さ prefix + codec）
+* 2 種の通信パターン
+    * Gossip: tx / block / vote などの拡散
+    * Req/Resp: block-by-height, tx-by-hash, status, headers 等の取得
+* ピア管理
+    * 接続中ピア集合
+    * 受信メッセージのレート制限（最低限）
+    * Ban/score（簡易でよい）
+
+2. 推奨スタック（Rust）
+「min」を目指すなら、まずはこの 2 択です。
+A) libp2p を使う（実運用寄り、最短で強い）
+* Pros: discovery/gossip/reqresp/identity が揃う、実績も多い
+* Cons: 抽象度が高く、最低限でも概念が多い
+B) tokio + quinn(QUIC) で自前（設計が最小、あなたの世界観に寄せやすい）
+* Pros: モジュール境界が綺麗、必要なものだけ
+* Cons: discovery/gossip/score 等を自分で用意する必要
+あなたは「min module」を明確に欲しているので、ここでは **B（tokio + quinn）**前提で、差し替え可能な APIを定義しつつ骨格を作ります。 （後で libp2p 実装に差し替えたいなら、Transport を trait で切れば移行できます。）
+
+4. ネットワークAPI（上位が使う “最小の”口）
+上位（ledger/consensus）はネットワークをこう呼べれば足ります。
+* publish(topic, bytes)（ゴシップ）
+* request(peer, req) -> resp
+* subscribe(topic) -> stream
+* events() -> stream（peer connected/disconnected 等）
+この “最小口” を崩さなければ、コンセンサス（HotStuff / Tendermint / Raft風）や同期戦略（headers-first 等）をあとから載せられます。
+
+5. メッセージ定義（min だが将来死なない形）
+最初に “何を流すか” を固定すると後で詰むので、最低限の汎用形にします。
+* Gossip { topic, payload }
+* Req { id, kind, payload }
+* Resp { id, status, payload }
+* Hello { version, node_id, features }
+* Ping/Pong
+topic は文字列でもよいですが、最小なら u16/u32 の列挙にしておくと良いです。
+
+
+
